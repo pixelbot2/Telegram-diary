@@ -52,6 +52,11 @@ const subjects = [
   'Global Perspective & Global Citizenship',
 ];
 
+const teachers = [
+  { text: 'Nabila Tabassum', value: 'Nabila Tabassum' },
+  { text: 'Junayed Nafis', value: 'Junayed Nafis' },
+];
+
 console.log('Bot started successfully...');
 
 // --- Helper Function to Build Keyboards ---
@@ -69,10 +74,14 @@ function buildInlineKeyboard(items, type) {
 
 // --- Reusable Start Function ---
 function startBot(chatId) {
-  const welcomeMessage = 'Welcome to the diary making page. Please select your class:';
+  // ✨ AESTHETIC CHANGE: More engaging welcome message
+  const welcomeMessage = '📝 **Welcome to the Diary Maker!**\n\nLet\'s create a new entry. Please select your class:';
   const keyboard = buildInlineKeyboard(classes, 'class');
 
-  bot.sendMessage(chatId, welcomeMessage, { reply_markup: keyboard })
+  bot.sendMessage(chatId, welcomeMessage, { 
+      reply_markup: keyboard,
+      parse_mode: 'Markdown' // Enable bolding
+    })
     .then(sentMessage => {
       userStates.set(chatId, {
         step: 'AWAITING_CLASS',
@@ -80,7 +89,6 @@ function startBot(chatId) {
       });
     })
     .catch(err => {
-      // Handle potential errors, e.g., if user blocked the bot
       console.error(`Error sending start message to chat ${chatId}:`, err.message);
     });
 }
@@ -93,7 +101,7 @@ bot.onText(/\/start/, (msg) => {
 });
 
 // --- Bot Callback Query Handler (Button Clicks) ---
-bot.on('callback_query', (query) => {
+bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   const data = query.data;
   const [type, value] = data.split(':');
@@ -104,6 +112,7 @@ bot.on('callback_query', (query) => {
     return;
   }
 
+  // Answer the callback immediately to remove the "loading" icon on the button
   bot.answerCallbackQuery(query.id);
 
   if (type === 'class' && state.step === 'AWAITING_CLASS') {
@@ -111,51 +120,105 @@ bot.on('callback_query', (query) => {
     state.step = 'AWAITING_SUBJECT';
     userStates.set(chatId, state);
 
-    const subjectMessage = 'Great! Now select your subject:';
+    // ✨ AESTHETIC CHANGE: Clearer, friendlier prompt
+    const subjectMessage = `🎓 **Class:** ${value}\n\nPerfect! Now, please select the subject:`;
     const keyboard = buildInlineKeyboard(subjects, 'subject');
 
     bot.editMessageText(subjectMessage, {
       chat_id: chatId,
       message_id: state.messageId,
       reply_markup: keyboard,
+      parse_mode: 'Markdown'
     });
   } else if (type === 'subject' && state.step === 'AWAITING_SUBJECT') {
     state.subject = value;
     state.step = 'AWAITING_CW';
     userStates.set(chatId, state);
 
-    bot.editMessageText('Got it. Please enter your CW (Classwork):', {
+    // ✨ AESTHETIC CHANGE: Show selection and give clear instruction
+    const cwMessage = `🎓 **Class:** ${state.class}\n📚 **Subject:** ${value}\n\nGot it. Now, please send the **Classwork (CW)** as a message:`;
+
+    bot.editMessageText(cwMessage, {
       chat_id: chatId,
       message_id: state.messageId,
+      parse_mode: 'Markdown'
+      // No reply_markup, as we're expecting text
     });
+  } else if (type === 'teacher' && state.step === 'AWAITING_TEACHER') {
+    state.teacher = value;
+
+    // ✨ AESTHETIC CHANGE: A cool "loading" message
+    await bot.editMessageText('🎨 **Generating your diary...**\n\nPlease wait a moment.', {
+      chat_id: chatId,
+      message_id: state.messageId,
+      reply_markup: undefined, // Remove the keyboard
+      parse_mode: 'Markdown'
+    });
+
+    // Build the URL
+    const params = new URLSearchParams({
+      class: state.class,
+      subject: state.subject,
+      cw: state.cw,
+      hw: 'N/A', 
+      remarks: 'N/A',
+      teacher: state.teacher,
+    });
+
+    const finalUrl = `https://blu.com.bd/generate?${params.toString()}`;
+
+    try {
+      const response = await axios.get(finalUrl, {
+        responseType: 'arraybuffer',
+      });
+
+      const imageBuffer = Buffer.from(response.data, 'binary');
+
+      // ✨ AESTHETIC CHANGE: A nicer caption
+      await bot.sendPhoto(chatId, imageBuffer, {
+        caption: `Here's your custom diary entry! ✨\n\n**Subject:** ${state.subject}\n**Teacher:** ${state.teacher}`,
+        parse_mode: 'Markdown'
+      });
+      
+      // ✨ AESTHETIC CHANGE: A cleaner success message
+      await bot.editMessageText('✅ **Done!**\n\nReady for the next one? Just type /start.', {
+         chat_id: chatId,
+         message_id: state.messageId,
+         parse_mode: 'Markdown'
+      });
+
+    } catch (error) {
+      console.error('Error fetching image:', error.message);
+      // ✨ AESTHETIC CHANGE: A helpful error message
+      await bot.editMessageText('⚠️ **Oops! Something went wrong.**\n\nI couldn\'t generate the diary image. Please check the API or try again.', {
+         chat_id: chatId,
+         message_id: state.messageId,
+         parse_mode: 'Markdown'
+      });
+      await bot.sendMessage(chatId, `You can try the link manually: ${finalUrl}`);
+    }
+
+    // Clear the state for this user
+    userStates.delete(chatId);
   }
 });
 
 // --- Bot Message Handler (Text Inputs) ---
-// We make this function 'async' to use 'await' for the image download
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
-  // If no text (e.g., sticker, photo), do nothing
-  if (!text) {
-    return;
-  }
-  
-  // If the message is /start, the onText handler will take care of it
-  if (text === '/start') {
-    return;
+  if (!text || text === '/start') {
+    return; // Handled by other listeners
   }
 
   const state = userStates.get(chatId);
 
-  // If user has no state and sent a non-command message, start the bot
   if (!state && !text.startsWith('/')) {
     startBot(chatId);
     return;
   }
 
-  // If state is invalid or has no step, do nothing
   if (!state || !state.step) {
     return;
   }
@@ -163,61 +226,24 @@ bot.on('message', async (msg) => {
   switch (state.step) {
     case 'AWAITING_CW':
       state.cw = text;
-      state.step = 'AWAITING_REMARKS';
-      userStates.set(chatId, state);
-      bot.sendMessage(chatId, 'Please enter any remarks:');
-      break;
-
-    case 'AWAITING_REMARKS':
-      state.remarks = text;
       state.step = 'AWAITING_TEACHER';
       userStates.set(chatId, state);
-      bot.sendMessage(chatId, "Almost done! Please enter the teacher's name:");
-      break;
 
-    case 'AWAITING_TEACHER':
-      state.teacher = text;
-
-      // Let the user know we're working on it
-      await bot.sendMessage(chatId, 'Generating your diary, please wait...');
-
-      // Build the URL
-      const params = new URLSearchParams({
-        class: state.class,
-        subject: state.subject,
-        cw: state.cw,
-        hw: 'N/A', // Hardcoded as per your request
-        remarks: state.remarks,
-        teacher: state.teacher,
+      // ✨ AESTHETIC CHANGE: Show all selections so far
+      const teacherMessage = `🎓 **Class:** ${state.class}\n📚 **Subject:** ${state.subject}\n✍️ **CW:** ${text}\n\nAlmost done! Please select the teacher:`;
+      const keyboard = buildInlineKeyboard(teachers, 'teacher');
+      
+      bot.editMessageText(teacherMessage, {
+        chat_id: chatId,
+        message_id: state.messageId, // Edit the original message
+        reply_markup: keyboard,
+        parse_mode: 'Markdown'
       });
 
-      const finalUrl = `https://blu.com.bd/generate?${params.toString()}`;
-
-      try {
-        // --- NEW: Download the image ---
-        // We set responseType to 'arraybuffer' to get the image data
-        const response = await axios.get(finalUrl, {
-          responseType: 'arraybuffer',
-        });
-
-        // Convert the downloaded data into a Buffer
-        const imageBuffer = Buffer.from(response.data, 'binary');
-
-        // Send the image as a photo
-        await bot.sendPhoto(chatId, imageBuffer, {
-          caption: 'Here is your diary entry!',
-        });
-
-      } catch (error) {
-        // Handle errors (e.g., website is down, URL is wrong)
-        console.error('Error fetching image:', error.message);
-        await bot.sendMessage(chatId, 'Sorry, I couldn\'t generate the diary image. Please check the API or try again.');
-        // Optionally, send the link as a fallback
-        await bot.sendMessage(chatId, `You can try the link manually: ${finalUrl}`);
-      }
-
-      // Clear the state for this user
-      userStates.delete(chatId);
+      // Optional: Delete the user's CW message to keep the chat clean
+      bot.deleteMessage(chatId, msg.message_id).catch(err => {
+         console.warn(`Failed to delete user message: ${err.message}`);
+      });
       break;
   }
 });
