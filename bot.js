@@ -12,6 +12,7 @@ if (!token) {
 
 const bot = new TelegramBot(token, { polling: true });
 const userStates = new Map();
+const ADMIN_CHAT_ID = '1928349457'; // <-- Your ID for logging
 
 // --- Data ---
 const classes = [
@@ -31,7 +32,7 @@ const subjects = [
   'Global Citizenship', 'Global Perspective', 'Global Perspective & Global Citizenship',
 ];
 
-console.log('📗 Bot started successfully... (Multi-Message Cleanup Version)');
+console.log('📗 Bot started successfully... (Multi-Message Cleanup + Logging Version)');
 
 // --- Helper Functions ---
 
@@ -61,7 +62,7 @@ async function startBot(chatId) {
 }
 
 /** * Clean up all messages
- * This is the core of Suggestion #2.
+ * This is the core of the cleanup flow.
  */
 async function cleanupMessages(chatId, state) {
   if (state && state.messagesToDelete) {
@@ -160,6 +161,8 @@ bot.on('callback_query', async (query) => {
 
     // 4. Restart button
     if (type === 'restart') {
+      // Don't clean up here, the /start handler will do it
+      // This button just re-triggers the /start logic
       await cleanupMessages(chatId, state);
       startBot(chatId);
       return;
@@ -234,11 +237,35 @@ bot.on('message', async (msg) => {
   }
 
   // Save state after changes
-  userStates.set(chatId, state);
+  if (userStates.has(chatId)) {
+      userStates.set(chatId, state);
+  }
 });
 
 // --- Image generation helper ---
 async function generateImageAndSend(chatId, state, hasHW) {
+  
+  // --- ✨ NEW LOGGING BLOCK ---
+  try {
+    const logMessage = `
+🔔 *New Diary Generation* 🔔
+-------------------------
+🎓 *Class:* \`${state.class}\`
+📚 *Subject:* \`${state.subject}\`
+👩‍🏫 *Teacher:* \`${state.teacher}\`
+    `;
+    
+    // Send the log message to your admin ID
+    bot.sendMessage(ADMIN_CHAT_ID, logMessage, { parse_mode: 'Markdown' })
+      .catch(err => {
+        // Log this error, but don't stop the user's diary
+        console.error('Failed to send log message to admin:', err.message);
+      });
+  } catch (logErr) {
+    console.error('Critical error in logging block:', logErr);
+  }
+  // --- ✨ END NEW LOGGING BLOCK ---
+
   let generatingMessage;
   try {
     // Send "Generating..." and add it to the delete list
