@@ -21,15 +21,35 @@ const userStates = new Map();
 
 // --- Define your data ---
 const classes = [
-  { text: 'STD 1 (Orchid)', value: 'STD.I (Orchid)' },
-  { text: 'STD 2', value: 'STD 2' },
-  { text: 'STD 3', value: 'STD 3' },
-  // Add more classes as needed
+  { text: 'STD.I (Orchid & Camellia)', value: 'STD.I (Orchid & Camellia)' },
+  { text: 'STD.II (Daffodil & Daisy)', value: 'STD.II (Daffodil & Daisy)' },
+  { text: 'STD.III (Magnolia & Gardenia)', value: 'STD.III (Magnolia & Gardenia)' },
+  { text: 'STD.IV (Lavender)', value: 'STD.IV (Lavender)' },
+  { text: 'STD.V (Azalea)', value: 'STD.V (Azalea)' },
+  { text: 'STD.VI (Iris)', value: 'STD.VI (Iris)' },
+  { text: 'STD.VII (Aster)', value: 'STD.VII (Aster)' },
 ];
 
 const subjects = [
-  'Art', 'Bangla', 'English', 'Maths',
-  // Add more subjects as needed
+  'Music',
+  'Bangla',
+  'Art & Craft',
+  'Value Education',
+  'English',
+  'Mathematics',
+  'Science',
+  'Global English',
+  'Physics',
+  'BGST',
+  'ICT',
+  'Chemistry',
+  'Biology',
+  'Primary English',
+  'Mathematics D',
+  'Mathematics Additional',
+  'Global Citizenship',
+  'Global Perspective',
+  'Global Perspective & Global Citizenship',
 ];
 
 console.log('Bot started successfully...');
@@ -47,12 +67,8 @@ function buildInlineKeyboard(items, type) {
   };
 }
 
-// --- Bot Command Handlers ---
-
-// Handle the /start command
-bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
-
+// --- Reusable Start Function ---
+function startBot(chatId) {
   const welcomeMessage = 'Welcome to the diary making page. Please select your class:';
   const keyboard = buildInlineKeyboard(classes, 'class');
 
@@ -62,7 +78,18 @@ bot.onText(/\/start/, (msg) => {
         step: 'AWAITING_CLASS',
         messageId: sentMessage.message_id,
       });
+    })
+    .catch(err => {
+      // Handle potential errors, e.g., if user blocked the bot
+      console.error(`Error sending start message to chat ${chatId}:`, err.message);
     });
+}
+
+// --- Bot Command Handlers ---
+
+// Handle the /start command
+bot.onText(/\/start/, (msg) => {
+  startBot(msg.chat.id);
 });
 
 // --- Bot Callback Query Handler (Button Clicks) ---
@@ -110,11 +137,25 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
-  if (!text || text.startsWith('/')) {
+  // If no text (e.g., sticker, photo), do nothing
+  if (!text) {
+    return;
+  }
+  
+  // If the message is /start, the onText handler will take care of it
+  if (text === '/start') {
     return;
   }
 
   const state = userStates.get(chatId);
+
+  // If user has no state and sent a non-command message, start the bot
+  if (!state && !text.startsWith('/')) {
+    startBot(chatId);
+    return;
+  }
+
+  // If state is invalid or has no step, do nothing
   if (!state || !state.step) {
     return;
   }
