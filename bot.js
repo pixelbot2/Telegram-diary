@@ -4,7 +4,6 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 
-// Bot Token
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
   console.error('Error: TELEGRAM_BOT_TOKEN is not set.');
@@ -31,7 +30,7 @@ const subjects = [
   'Global Citizenship', 'Global Perspective', 'Global Perspective & Global Citizenship',
 ];
 
-console.log('Bot started successfully...');
+console.log('📗 Bot started successfully...');
 
 // --- Helper ---
 function buildInlineKeyboard(items, type) {
@@ -42,7 +41,7 @@ function buildInlineKeyboard(items, type) {
 }
 
 function startBot(chatId) {
-  const message = '📝 **Welcome to the Diary Maker!**\n\nSelect your class:';
+  const message = '📝 **Welcome to the Diary Maker!**\n\nPlease select your class:';
   const keyboard = buildInlineKeyboard(classes, 'class');
   bot.sendMessage(chatId, message, { reply_markup: keyboard, parse_mode: 'Markdown' });
 }
@@ -71,7 +70,7 @@ bot.on('callback_query', async (query) => {
     state.subject = value;
     state.step = 'AWAITING_CW';
     userStates.set(chatId, state);
-    bot.editMessageText(`🎓 **Class:** ${state.class}\n📚 **Subject:** ${value}\n\nSend the *Classwork (CW)*:`, {
+    bot.editMessageText(`🎓 **Class:** ${state.class}\n📚 **Subject:** ${value}\n\nPlease send the *Classwork (CW)*:`, {
       chat_id: chatId,
       message_id: query.message.message_id,
       parse_mode: 'Markdown'
@@ -80,10 +79,12 @@ bot.on('callback_query', async (query) => {
     if (value === 'yes') {
       state.step = 'AWAITING_HW';
       userStates.set(chatId, state);
-      bot.sendMessage(chatId, '📘 Great! Please send the **Homework (HW)** text:', { parse_mode: 'Markdown' });
+      bot.sendMessage(chatId, '📘 Great! Please send the **Homework (HW)**:');
     } else if (value === 'no') {
-      await generateImage(chatId, state, false);
-      userStates.delete(chatId);
+      state.hw = '';
+      state.step = 'AWAITING_REMARKS';
+      userStates.set(chatId, state);
+      bot.sendMessage(chatId, 'Any **remarks**? (Type "none" if not)');
     }
   }
 });
@@ -115,31 +116,39 @@ bot.on('message', async (msg) => {
       state.hw = text;
       state.step = 'AWAITING_REMARKS';
       userStates.set(chatId, state);
-      bot.sendMessage(chatId, 'Any remarks? (You can type "none" if not)', { parse_mode: 'Markdown' });
+      bot.sendMessage(chatId, 'Any **remarks**? (Type "none" if not)');
       break;
 
     case 'AWAITING_REMARKS':
-      state.remarks = text === 'none' ? '' : text;
-      await generateImage(chatId, state, true);
+      state.remarks = text.toLowerCase() === 'none' ? '' : text;
+      state.step = 'AWAITING_TEACHER';
+      userStates.set(chatId, state);
+      bot.sendMessage(chatId, '👩‍🏫 Please enter the **Teacher\'s Name**:');
+      break;
+
+    case 'AWAITING_TEACHER':
+      state.teacher = text;
+      await generateImage(chatId, state);
       userStates.delete(chatId);
       break;
   }
 });
 
 // --- Image Generator Function ---
-async function generateImage(chatId, state, hasHW) {
+async function generateImage(chatId, state) {
   try {
     await bot.sendMessage(chatId, '🎨 Generating your diary image... Please wait.');
 
     let url = '';
-    if (hasHW) {
+    if (state.hw) {
       // API with HW
       const params = new URLSearchParams({
         class: state.class,
         subject: state.subject,
         cw: state.cw,
         hw: state.hw,
-        remarks: state.remarks
+        remarks: state.remarks,
+        teacher: state.teacher
       });
       url = `https://diaryapifinal.onrender.com/generate-hw?${params.toString()}`;
     } else {
@@ -147,7 +156,8 @@ async function generateImage(chatId, state, hasHW) {
       const params = new URLSearchParams({
         class: state.class,
         subject: state.subject,
-        cw: state.cw
+        cw: state.cw,
+        teacher: state.teacher
       });
       url = `https://diaryapifinal.onrender.com/generate?${params.toString()}`;
     }
@@ -156,11 +166,24 @@ async function generateImage(chatId, state, hasHW) {
     const imageBuffer = Buffer.from(response.data, 'binary');
 
     await bot.sendPhoto(chatId, imageBuffer, {
-      caption: `✅ Diary generated successfully!\n\n📚 *Subject:* ${state.subject}\n✏️ *CW:* ${state.cw}${hasHW ? `\n📘 *HW:* ${state.hw}` : ''}`,
+      caption: `✅ Diary generated successfully!\n\n📚 *Subject:* ${state.subject}\n✏️ *CW:* ${state.cw}${state.hw ? `\n📘 *HW:* ${state.hw}` : ''}\n👩‍🏫 *Teacher:* ${state.teacher}`,
       parse_mode: 'Markdown'
     });
+
+    // Ask if user wants to create another
+    const keyboard = {
+      inline_keyboard: [[{ text: '🔁 Create another diary', callback_data: 'restart' }]],
+    };
+    bot.sendMessage(chatId, 'Would you like to create another?', { reply_markup: keyboard });
   } catch (err) {
     console.error('Error generating image:', err.message);
     bot.sendMessage(chatId, '⚠️ Failed to generate diary. Please try again.');
   }
 }
+
+// Handle "Create another"
+bot.on('callback_query', (query) => {
+  if (query.data === 'restart') {
+    startBot(query.message.chat.id);
+  }
+});
