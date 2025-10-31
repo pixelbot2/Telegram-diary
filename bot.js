@@ -2,24 +2,18 @@
 require('dotenv').config();
 
 const TelegramBot = require('node-telegram-bot-api');
-const axios = require('axios'); // Import axios for making HTTP requests
+const axios = require('axios');
 
-// Get the bot token from the environment variables
+// Bot Token
 const token = process.env.TELEGRAM_BOT_TOKEN;
-
 if (!token) {
   console.error('Error: TELEGRAM_BOT_TOKEN is not set.');
-  console.log('Please create a .env file and add your bot token.');
   process.exit(1);
 }
 
-// Create a bot that uses 'polling' to fetch new updates
 const bot = new TelegramBot(token, { polling: true });
-
-// In-memory storage for user states
 const userStates = new Map();
 
-// --- Define your data ---
 const classes = [
   { text: 'STD.I (Orchid & Camellia)', value: 'STD.I (Orchid & Camellia)' },
   { text: 'STD.II (Daffodil & Daisy)', value: 'STD.II (Daffodil & Daisy)' },
@@ -31,221 +25,142 @@ const classes = [
 ];
 
 const subjects = [
-  'Music',
-  'Bangla',
-  'Art & Craft',
-  'Value Education',
-  'English',
-  'Mathematics',
-  'Science',
-  'Global English',
-  'Physics',
-  'BGST',
-  'ICT',
-  'Chemistry',
-  'Biology',
-  'Primary English',
-  'Mathematics D',
-  'Mathematics Additional',
-  'Global Citizenship',
-  'Global Perspective',
-  'Global Perspective & Global Citizenship',
+  'Music', 'Bangla', 'Art & Craft', 'Value Education', 'English', 'Mathematics', 'Science',
+  'Global English', 'Physics', 'BGST', 'ICT', 'Chemistry', 'Biology',
+  'Primary English', 'Mathematics D', 'Mathematics Additional',
+  'Global Citizenship', 'Global Perspective', 'Global Perspective & Global Citizenship',
 ];
-
-// REMOVED: Teachers array is no longer needed
 
 console.log('Bot started successfully...');
 
-// --- Helper Function to Build Keyboards ---
+// --- Helper ---
 function buildInlineKeyboard(items, type) {
-  const buttons = items.map(item => {
-    if (typeof item === 'object') {
-      return [{ text: item.text, callback_data: `${type}:${item.value}` }];
-    }
-    return [{ text: item, callback_data: `${type}:${item}` }];
-  });
-  return {
-    inline_keyboard: buttons,
-  };
+  const buttons = items.map(item =>
+    [{ text: typeof item === 'object' ? item.text : item, callback_data: `${type}:${typeof item === 'object' ? item.value : item}` }]
+  );
+  return { inline_keyboard: buttons };
 }
 
-// --- Reusable Start Function ---
 function startBot(chatId) {
-  const welcomeMessage = '📝 **Welcome to the Diary Maker!**\n\nLet\'s create a new entry. Please select your class:';
+  const message = '📝 **Welcome to the Diary Maker!**\n\nSelect your class:';
   const keyboard = buildInlineKeyboard(classes, 'class');
-
-  bot.sendMessage(chatId, welcomeMessage, { 
-      reply_markup: keyboard,
-      parse_mode: 'Markdown' 
-    })
-    .then(sentMessage => {
-      userStates.set(chatId, {
-        step: 'AWAITING_CLASS',
-        messageId: sentMessage.message_id,
-      });
-    })
-    .catch(err => {
-      console.error(`Error sending start message to chat ${chatId}:`, err.message);
-    });
+  bot.sendMessage(chatId, message, { reply_markup: keyboard, parse_mode: 'Markdown' });
 }
 
-// --- Bot Command Handlers ---
+// --- Commands ---
+bot.onText(/\/start/, (msg) => startBot(msg.chat.id));
 
-// Handle the /start command
-bot.onText(/\/start/, (msg) => {
-  startBot(msg.chat.id);
-});
-
-// --- Bot Callback Query Handler (Button Clicks) ---
+// --- Callback Handler ---
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
-  const data = query.data;
-  const [type, value] = data.split(':');
-
-  const state = userStates.get(chatId);
-  if (!state) {
-    bot.answerCallbackQuery(query.id);
-    return;
-  }
-
+  const [type, value] = query.data.split(':');
+  const state = userStates.get(chatId) || {};
   bot.answerCallbackQuery(query.id);
 
-  if (type === 'class' && state.step === 'AWAITING_CLASS') {
+  if (type === 'class') {
     state.class = value;
     state.step = 'AWAITING_SUBJECT';
     userStates.set(chatId, state);
-
-    const subjectMessage = `🎓 **Class:** ${value}\n\nPerfect! Now, please select the subject:`;
+    const msg = `🎓 **Class:** ${value}\n\nNow select the subject:`;
     const keyboard = buildInlineKeyboard(subjects, 'subject');
-
-    bot.editMessageText(subjectMessage, {
-      chat_id: chatId,
-      message_id: state.messageId,
-      reply_markup: keyboard,
-      parse_mode: 'Markdown'
+    bot.editMessageText(msg, {
+      chat_id: chatId, message_id: query.message.message_id,
+      reply_markup: keyboard, parse_mode: 'Markdown'
     });
   } else if (type === 'subject' && state.step === 'AWAITING_SUBJECT') {
     state.subject = value;
     state.step = 'AWAITING_CW';
     userStates.set(chatId, state);
-
-    const cwMessage = `🎓 **Class:** ${state.class}\n📚 **Subject:** ${value}\n\nGot it. Now, please send the **Classwork (CW)** as a message:`;
-
-    bot.editMessageText(cwMessage, {
+    bot.editMessageText(`🎓 **Class:** ${state.class}\n📚 **Subject:** ${value}\n\nSend the *Classwork (CW)*:`, {
       chat_id: chatId,
-      message_id: state.messageId,
+      message_id: query.message.message_id,
       parse_mode: 'Markdown'
     });
+  } else if (type === 'hasHW') {
+    if (value === 'yes') {
+      state.step = 'AWAITING_HW';
+      userStates.set(chatId, state);
+      bot.sendMessage(chatId, '📘 Great! Please send the **Homework (HW)** text:', { parse_mode: 'Markdown' });
+    } else if (value === 'no') {
+      await generateImage(chatId, state, false);
+      userStates.delete(chatId);
+    }
   }
-  // REMOVED: The 'teacher' callback logic
 });
 
-// --- Bot Message Handler (Text Inputs) ---
+// --- Message Handler ---
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
-
-  if (!text || text === '/start') {
-    return; // Handled by other listeners
-  }
+  if (text.startsWith('/')) return;
 
   const state = userStates.get(chatId);
-
-  if (!state && !text.startsWith('/')) {
-    startBot(chatId);
-    return;
-  }
-
-  if (!state || !state.step) {
-    return;
-  }
-
-  // We'll store the original message ID to edit it later
-  const messageToEditId = state.messageId || msg.message_id;
+  if (!state) return;
 
   switch (state.step) {
     case 'AWAITING_CW':
       state.cw = text;
-      state.step = 'AWAITING_TEACHER'; // Go to next text step
+      state.step = 'ASK_HW';
       userStates.set(chatId, state);
 
-      // CHANGED: Ask for teacher's name as text
-      const teacherMessage = `🎓 **Class:** ${state.class}\n📚 **Subject:** ${state.subject}\n✍️ **CW:** ${text}\n\nAlmost done! Please send the **Teacher's Name**:`;
-      
-      bot.editMessageText(teacherMessage, {
-        chat_id: chatId,
-        message_id: messageToEditId, 
-        parse_mode: 'Markdown'
-        // No reply_markup
-      });
-
-      // Keep track of the message we just edited
-      state.messageId = (await bot.getChat(chatId)).message_id || messageToEditId;
-
-      // Delete the user's CW message to keep the chat clean
-      bot.deleteMessage(chatId, msg.message_id).catch(err => {
-         console.warn(`Failed to delete user message: ${err.message}`);
-      });
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: '✅ Yes', callback_data: 'hasHW:yes' }, { text: '❌ No', callback_data: 'hasHW:no' }]
+        ]
+      };
+      bot.sendMessage(chatId, 'Do you have Homework (HW)?', { reply_markup: keyboard });
       break;
 
-    // NEW: Handle teacher text input
-    case 'AWAITING_TEACHER':
-      state.teacher = text;
+    case 'AWAITING_HW':
+      state.hw = text;
+      state.step = 'AWAITING_REMARKS';
+      userStates.set(chatId, state);
+      bot.sendMessage(chatId, 'Any remarks? (You can type "none" if not)', { parse_mode: 'Markdown' });
+      break;
 
-      // Delete the user's teacher name message
-      bot.deleteMessage(chatId, msg.message_id).catch(err => {
-         console.warn(`Failed to delete user message: ${err.message}`);
-      });
-
-      // Show "Generating" message
-      await bot.editMessageText('🎨 **Generating your diary...**\n\nPlease wait a moment.', {
-        chat_id: chatId,
-        message_id: messageToEditId,
-        parse_mode: 'Markdown'
-      });
-
-      // Build the URL
-      const params = new URLSearchParams({
-        class: state.class,
-        subject: state.subject,
-        cw: state.cw,
-        hw: 'N/A', 
-        remarks: 'N/A',
-        teacher: state.teacher,
-      });
-
-      const finalUrl = `https://blu.com.bd/generate?${params.toString()}`;
-
-      try {
-        const response = await axios.get(finalUrl, {
-          responseType: 'arraybuffer',
-        });
-
-        const imageBuffer = Buffer.from(response.data, 'binary');
-
-        await bot.sendPhoto(chatId, imageBuffer, {
-          caption: `Here's your custom diary entry! ✨\n\n**Subject:** ${state.subject}\n**Teacher:** ${state.teacher}`,
-          parse_mode: 'Markdown'
-        });
-        
-        await bot.editMessageText('✅ **Done!**\n\nReady for the next one? Just type /start.', {
-           chat_id: chatId,
-           message_id: messageToEditId,
-           parse_mode: 'Markdown'
-        });
-
-      } catch (error) {
-        console.error('Error fetching image:', error.message);
-        await bot.editMessageText('⚠️ **Oops! Something went wrong.**\n\nI couldn\'t generate the diary image. Please try again.', {
-           chat_id: chatId,
-           message_id: messageToEditId,
-           parse_mode: 'Markdown'
-        });
-        await bot.sendMessage(chatId, `You can try the link manually: ${finalUrl}`);
-      }
-
-      // Clear the state for this user
+    case 'AWAITING_REMARKS':
+      state.remarks = text === 'none' ? '' : text;
+      await generateImage(chatId, state, true);
       userStates.delete(chatId);
       break;
   }
 });
+
+// --- Image Generator Function ---
+async function generateImage(chatId, state, hasHW) {
+  try {
+    await bot.sendMessage(chatId, '🎨 Generating your diary image... Please wait.');
+
+    let url = '';
+    if (hasHW) {
+      // API with HW
+      const params = new URLSearchParams({
+        class: state.class,
+        subject: state.subject,
+        cw: state.cw,
+        hw: state.hw,
+        remarks: state.remarks
+      });
+      url = `https://diaryapifinal.onrender.com/generate-hw?${params.toString()}`;
+    } else {
+      // API without HW
+      const params = new URLSearchParams({
+        class: state.class,
+        subject: state.subject,
+        cw: state.cw
+      });
+      url = `https://diaryapifinal.onrender.com/generate?${params.toString()}`;
+    }
+
+    const response = await axios.get(url, { responseType: 'arraybuffer' });
+    const imageBuffer = Buffer.from(response.data, 'binary');
+
+    await bot.sendPhoto(chatId, imageBuffer, {
+      caption: `✅ Diary generated successfully!\n\n📚 *Subject:* ${state.subject}\n✏️ *CW:* ${state.cw}${hasHW ? `\n📘 *HW:* ${state.hw}` : ''}`,
+      parse_mode: 'Markdown'
+    });
+  } catch (err) {
+    console.error('Error generating image:', err.message);
+    bot.sendMessage(chatId, '⚠️ Failed to generate diary. Please try again.');
+  }
+}
