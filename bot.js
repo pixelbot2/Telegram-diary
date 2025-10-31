@@ -31,7 +31,7 @@ const subjects = [
   'Global Citizenship', 'Global Perspective', 'Global Perspective & Global Citizenship',
 ];
 
-console.log('📗 Bot started successfully... (Smooth Version)');
+console.log('📗 Bot started successfully... (Multi-Message Cleanup Version)');
 
 // --- Helper Functions ---
 
@@ -43,57 +43,43 @@ function buildInlineKeyboard(items, type) {
   return { inline_keyboard: buttons };
 }
 
-/** * Builds the text for the "Single Message" UI.
- * This function creates the summary of what the user has selected so far.
- */
-function buildProgressText(state, nextPrompt) {
-  const parts = ['📝 *Welcome to the Diary Maker!*'];
+/** Starts the entire flow */
+async function startBot(chatId) {
+  const message = '📝 *Welcome to the Diary Maker!*\n\nStep 1 — Please select your *Class*:';
+  const keyboard = buildInlineKeyboard(classes, 'class');
   
-  if (state.class) parts.push(`🎓 *Class:* \`${state.class}\``);
-  if (state.subject) parts.push(`📚 *Subject:* \`${state.subject}\``);
-  if (state.teacher) parts.push(`👩‍🏫 *Teacher:* \`${state.teacher}\``);
-  if (state.cw) parts.push(`✍️ *CW:* \`${state.cw}\``);
-  if (state.hw) parts.push(`📘 *HW:* \`${state.hw}\``);
-  
-  parts.push(`\n${nextPrompt}`);
-  return parts.join('\n');
-}
-
-/** * Central function to edit the bot's "Single Message".
- * This is the core of Suggestion #1.
- */
-async function updateBotMessage(chatId, state, text, keyboard = null) {
   try {
-    const options = {
-      chat_id: chatId,
-      message_id: state.messageId,
-      parse_mode: 'Markdown',
-    };
-    if (keyboard) {
-      options.reply_markup = keyboard;
-    }
-    await bot.editMessageText(text, options);
+    const sent = await bot.sendMessage(chatId, message, { reply_markup: keyboard, parse_mode: 'Markdown' });
+    // Initialize state with the first message to delete
+    userStates.set(chatId, { 
+      step: 'AWAITING_CLASS', 
+      messagesToDelete: [sent.message_id] 
+    });
   } catch (e) {
-    console.warn(`Edit message failed (maybe no change): ${e.message}`);
+    console.error('Error starting bot:', e);
   }
 }
 
-/** Starts the entire flow */
-function startBot(chatId) {
-  const message = 'Step 1 — Please select your *Class*:';
-  const keyboard = buildInlineKeyboard(classes, 'class');
-  
-  bot.sendMessage(chatId, message, { reply_markup: keyboard, parse_mode: 'Markdown' })
-    .then(sent => {
-      // Save the messageId, this is CRITICAL for the single-message UI
-      userStates.set(chatId, { step: 'AWAITING_CLASS', messageId: sent.message_id });
-    });
+/** * Clean up all messages
+ * This is the core of Suggestion #2.
+ */
+async function cleanupMessages(chatId, state) {
+  if (state && state.messagesToDelete) {
+    // We use Promise.allSettled to try deleting all, even if some fail
+    // (e.g., if a message was already deleted)
+    const promises = state.messagesToDelete.map(msgId =>
+      bot.deleteMessage(chatId, msgId).catch(() => {}) // Ignore errors
+    );
+    await Promise.allSettled(promises);
+  }
+  // Clear the state
+  userStates.delete(chatId);
 }
 
 // --- Commands ---
 bot.onText(/\/start/, (msg) => {
   // Clear any old state before starting
-  userStates.delete(msg.chat.id);
+  cleanupMessages(msg.chat.id, userStates.get(msg.chat.id));
   startBot(msg.chat.id);
 });
 
@@ -103,66 +89,83 @@ bot.on('callback_query', async (query) => {
   const [type, value] = query.data.split(':');
   const state = userStates.get(chatId);
   
-  // Always answer the callback query to stop the "loading" icon
   await bot.answerCallbackQuery(query.id).catch(() => {});
-
   if (!state) return; // No state, do nothing
 
-  // --- Main State Machine (Callbacks) ---
+  // The message the button was on
+  const originalMessageId = query.message.message_id;
 
-  // 1. CLASS chosen
-  if (type === 'class' && state.step === 'AWAITING_CLASS') {
-    state.class = value;
-    state.step = 'AWAITING_SUBJECT';
-    userStates.set(chatId, state);
+  try {
+    // 1. CLASS chosen
+    if (type === 'class' && state.step === 'AWAITING_CLASS') {
+      state.class = value;
+      state.step = 'AWAITING_SUBJECT';
 
-    const text = buildProgressText(state, 'Step 2 — Please select the *Subject*:');
-    const keyboard = buildInlineKeyboard(subjects, 'subject');
-    await updateBotMessage(chatId, state, text, keyboard);
-    return;
-  }
+      // Edit the class message to show selection
+      await bot.editMessageText(`🎓 *Class:* \`${value}\``, { 
+        chat_id: chatId, 
+        message_id: originalMessageId, 
+        parse_mode: 'Markdown' 
+      });
 
-  // 2. SUBJECT chosen
-  if (type === 'subject' && state.step === 'AWAITING_SUBJECT') {
-    state.subject = value;
-    state.step = 'AWAITING_TEACHER';
-    userStates.set(chatId, state);
-
-    const text = buildProgressText(state, "Step 3 — Got it! Now, what's the *Teacher's Name*?");
-    await updateBotMessage(chatId, state, text); // No keyboard, awaiting text
-    return;
-  }
-
-  // 4. HW yes/no choice
-  if (type === 'hasHW' && state.step === 'AWAITING_HW_CONFIRM') {
-    if (value === 'yes') {
-      // User has HW
-      state.step = 'AWAITING_HW';
+      // Send NEW message for Subject
+      const kb = buildInlineKeyboard(subjects, 'subject');
+      const sent = await bot.sendMessage(chatId, 'Step 2 — Please select the *Subject*:', { reply_markup: kb });
+      state.messagesToDelete.push(sent.message_id);
       userStates.set(chatId, state);
-      
-      const text = buildProgressText(state, "OK — Please send the *Homework (HW)* text:");
-      await updateBotMessage(chatId, state, text);
-    } else {
-      // User has NO HW
-      state.hw = '';
-      state.remarks = '';
-      state.step = 'GENERATE_NO_HW';
-      userStates.set(chatId, state);
-      
-      // Call the API for "no homework"
-      await updateBotMessage(chatId, state, '👍 Got it! No homework.');
-      await generateImageAndSend(chatId, state, false); // false = no HW
-      userStates.delete(chatId); // Clean up state
+      return;
     }
-    return;
-  }
 
-  // 5. Restart button
-  if (type === 'restart') {
-    userStates.delete(chatId);
-    await bot.deleteMessage(chatId, state.messageId).catch(()=>{}); // Delete old message
-    startBot(chatId); // Start fresh
-    return;
+    // 2. SUBJECT chosen
+    if (type === 'subject' && state.step === 'AWAITING_SUBJECT') {
+      state.subject = value;
+      state.step = 'AWAITING_TEACHER';
+
+      // Edit the subject message
+      await bot.editMessageText(`📚 *Subject:* \`${value}\``, { 
+        chat_id: chatId, 
+        message_id: originalMessageId, 
+        parse_mode: 'Markdown' 
+      });
+
+      // Send NEW message for Teacher
+      const sent = await bot.sendMessage(chatId, "Step 3 — Got it! Now, what's the *Teacher's Name*?");
+      state.messagesToDelete.push(sent.message_id);
+      userStates.set(chatId, state);
+      return;
+    }
+
+    // 3. HW yes/no choice
+    if (type === 'hasHW' && state.step === 'AWAITING_HW_CONFIRM') {
+      if (value === 'yes') {
+        // User has HW
+        state.step = 'AWAITING_HW';
+        await bot.editMessageText('✅ *Homework:* Yes', { chat_id: chatId, message_id: originalMessageId, parse_mode: 'Markdown' });
+        
+        const sent = await bot.sendMessage(chatId, "OK — Please send the *Homework (HW)* text:");
+        state.messagesToDelete.push(sent.message_id);
+      } else {
+        // User has NO HW
+        state.hw = '';
+        state.remarks = '';
+        state.step = 'GENERATE_NO_HW';
+        await bot.editMessageText('❌ *Homework:* No', { chat_id: chatId, message_id: originalMessageId, parse_mode: 'Markdown' });
+        
+        // Call the API for "no homework"
+        await generateImageAndSend(chatId, state, false); // false = no HW
+      }
+      userStates.set(chatId, state);
+      return;
+    }
+
+    // 4. Restart button
+    if (type === 'restart') {
+      await cleanupMessages(chatId, state);
+      startBot(chatId);
+      return;
+    }
+  } catch (e) {
+    console.error('Callback error:', e.message);
   }
 });
 
@@ -171,76 +174,76 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
-  // Ignore commands
   if (!text || text.startsWith('/')) return;
 
   const state = userStates.get(chatId);
-  if (!state || !state.step || !state.messageId) {
+  if (!state || !state.step) {
     // If no flow started, ignore random text
     return;
   }
 
-  // --- Auto-delete user's reply (Suggestion #4) ---
-  bot.deleteMessage(chatId, msg.message_id).catch(()=>{});
+  // Add the user's reply to the delete list
+  state.messagesToDelete.push(msg.message_id);
 
-  // --- Main State Machine (Text) ---
-  switch (state.step) {
-    
-    // 3. Waiting for TEACHER
-    case 'AWAITING_TEACHER':
-      state.teacher = text;
-      state.step = 'AWAITING_CW';
-      userStates.set(chatId, state);
+  try {
+    switch (state.step) {
       
-      const text_cw = buildProgressText(state, "Step 4 — Great! What was the *Classwork (CW)*?");
-      await updateBotMessage(chatId, state, text_cw);
-      break;
+      // 3. Waiting for TEACHER
+      case 'AWAITING_TEACHER':
+        state.teacher = text;
+        state.step = 'AWAITING_CW';
+        
+        const sent_cw = await bot.sendMessage(chatId, "Step 4 — Great! What was the *Classwork (CW)*?");
+        state.messagesToDelete.push(sent_cw.message_id);
+        break;
 
-    // 4. Waiting for CW
-    case 'AWAITING_CW':
-      state.cw = text;
-      state.step = 'AWAITING_HW_CONFIRM';
-      userStates.set(chatId, state);
+      // 4. Waiting for CW
+      case 'AWAITING_CW':
+        state.cw = text;
+        state.step = 'AWAITING_HW_CONFIRM';
 
-      // Ask HW yes/no
-      const keyboard = {
-        inline_keyboard: [
-          [{ text: '✅ Yes', callback_data: 'hasHW:yes' }, { text: '❌ No', callback_data: 'hasHW:no' }]
-        ]
-      };
-      const text_hw_q = buildProgressText(state, "Step 5 — Do you have *Homework (HW)*?");
-      await updateBotMessage(chatId, state, text_hw_q, keyboard);
-      break;
+        const keyboard = {
+          inline_keyboard: [
+            [{ text: '✅ Yes', callback_data: 'hasHW:yes' }, { text: '❌ No', callback_data: 'hasHW:no' }]
+          ]
+        };
+        const sent_hw_q = await bot.sendMessage(chatId, 'Step 5 — Do you have *Homework (HW)*?', { reply_markup: keyboard });
+        state.messagesToDelete.push(sent_hw_q.message_id);
+        break;
 
-    // 5. Waiting for HW
-    case 'AWAITING_HW':
-      state.hw = text;
-      state.step = 'AWAITING_REMARKS';
-      userStates.set(chatId, state);
-      
-      const text_remarks = buildProgressText(state, "Last step! Any *Remarks*? (Type 'none' if empty)");
-      await updateBotMessage(chatId, state, text_remarks);
-      break;
+      // 5. Waiting for HW
+      case 'AWAITING_HW':
+        state.hw = text;
+        state.step = 'AWAITING_REMARKS';
+        
+        const sent_remarks = await bot.sendMessage(chatId, "Last step! Any *Remarks*? (Type 'none' if empty)");
+        state.messagesToDelete.push(sent_remarks.message_id);
+        break;
 
-    // 6. Waiting for REMARKS
-    case 'AWAITING_REMARKS':
-      state.remarks = (text && text.toLowerCase() === 'none') ? '' : text;
-      state.step = 'GENERATE_HW';
-      userStates.set(chatId, state);
-
-      // All inputs collected: call generate-hw
-      await updateBotMessage(chatId, state, '✅ All done!');
-      await generateImageAndSend(chatId, state, true); // true = has HW
-      userStates.delete(chatId); // Clean up state
-      break;
+      // 6. Waiting for REMARKS
+      case 'AWAITING_REMARKS':
+        state.remarks = (text && text.toLowerCase() === 'none') ? '' : text;
+        state.step = 'GENERATE_HW';
+        
+        // All inputs collected: call generate-hw
+        await generateImageAndSend(chatId, state, true); // true = has HW
+        break;
+    }
+  } catch (e) {
+    console.error('Message handler error:', e.message);
   }
+
+  // Save state after changes
+  userStates.set(chatId, state);
 });
 
-// --- Image generation helper (No changes needed, it's perfect) ---
+// --- Image generation helper ---
 async function generateImageAndSend(chatId, state, hasHW) {
+  let generatingMessage;
   try {
-    // Edit the main message to show "Generating..."
-    await updateBotMessage(chatId, state, '🎨 Generating your diary image... Please wait.');
+    // Send "Generating..." and add it to the delete list
+    generatingMessage = await bot.sendMessage(chatId, '🎨 Generating your diary image... Please wait.');
+    state.messagesToDelete.push(generatingMessage.message_id);
 
     let url = '';
     if (hasHW) {
@@ -254,7 +257,6 @@ async function generateImageAndSend(chatId, state, hasHW) {
       });
       url = `https://diaryapifinal.onrender.com/generate-hw?${params.toString()}`;
     } else {
-      // No HW: call generate (teacher included)
       const params = new URLSearchParams({
         class: state.class,
         subject: state.subject,
@@ -277,16 +279,13 @@ async function generateImageAndSend(chatId, state, hasHW) {
     ];
     if (hasHW) captionParts.push(`📘 HW: ${state.hw}`, `🗒️ Remarks: ${state.remarks || '—'}`);
     
-    // We must delete the "Single Message" first, because sendPhoto is a *new* message
-    await bot.deleteMessage(chatId, state.messageId).catch(() => {});
-
-    // Send the final photo
+    // Send the final photo (This message STAYS)
     await bot.sendPhoto(chatId, imageBuffer, {
       caption: captionParts.join('\n'),
       parse_mode: 'Markdown'
     });
 
-    // Offer restart
+    // Offer restart (This message STAYS)
     const keyboard = { inline_keyboard: [[{ text: '🔁 Create another diary', callback_data: 'restart' }]] };
     await bot.sendMessage(chatId, 'Would you like to create another?', { reply_markup: keyboard });
 
@@ -297,7 +296,7 @@ async function generateImageAndSend(chatId, state, hasHW) {
     const keyboard = { inline_keyboard: [[{ text: '🔁 Try again', callback_data: 'restart' }]] };
     await bot.sendMessage(chatId, 'Would you like to start over?', { reply_markup: keyboard });
   } finally {
-    // Ensure state is always cleared after a generation attempt
-    userStates.delete(chatId);
+    // Clean up ALL tracked messages
+    await cleanupMessages(chatId, state);
   }
 }
